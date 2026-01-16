@@ -8,18 +8,33 @@ import numpy as np
 import rasterio
 from rasterio.warp import reproject, Resampling
 from rasterio.features import geometry_mask
+from rasterio.mask import mask
 
-def map_flopros_to_adm(map_df, flopros, adm):
+def map_flopros_to_adm(adm, raster_path, out_col="MerL_Riv"):
     '''
-    This function maps the flopros map and protection values to the admin1 vector. Doing this because we will use the admin1 vector in further analysis and
-    it's borders differ slightly to the FLOPROS layer
+    Function for mapping FLOPROS raster data to admin areas.
+    Takes the mode of FLOPROS raster values within each admin area polygon.
+    Returns a GeoDataFrame with the new column added.
     '''
-    # Merging mapping dataframe with admin file (to ensure we have ID<>ID mapping info)
-    merged_df = adm.merge(map_df, how='left', left_on='GID_1', right_on='GID_1') # these are the basin IDs in Admin file
-    # We only want to bring the merged protection layer column from the FLOPROS dataset
-    new_adm = merged_df.merge(flopros[['OBJECTID', 'MerL_Riv']], how='left', left_on='OBJECTID', right_on='OBJECTID') # these are the basin IDs in FLOPROS file
+    with rasterio.open(raster_path) as src:
+        gdf = adm.to_crs(src.crs)
+        nodata = src.nodata
 
-    return new_adm
+        def poly_mode(geom):
+            a, _ = mask(src, [geom], crop=True, filled=False)
+            v = a[0].compressed()
+            if nodata is not None:
+                v = v[v != nodata]
+            if v.size == 0:
+                return np.nan
+            vals, counts = np.unique(v, return_counts=True)
+            return vals[counts.argmax()]
+
+        gdf[out_col] = [
+            poly_mode(g) if g and not g.is_empty else np.nan
+            for g in gdf.geometry
+        ]
+        return gdf
 
 def calculate_geod_length(line):
     '''

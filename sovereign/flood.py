@@ -17,7 +17,7 @@ def combine_glofas(start, end, dir, area_filter):
     as well as a start and end year for the desired discharge data. Also loads and clips the accumulating area dataset
     and masks the river discharge data by the specified upstream area threshold (area_filter)
     '''
-    all_files = [os.path.join(dir, f"glofas_THA_{year}.grib") for year in range(start, end+1)] # if we do this for other countries will have to adjust filenames
+    all_files = [os.path.join(dir, f"glofas_UGA_{year}.grib") for year in range(start, end+1)] # if we do this for other countries will have to adjust filenames
     # Load all datasets into array
     datasets = [xr.open_dataset(file, engine='cfgrib') for file in all_files]
     # Concatenate all datasets along the time dimension

@@ -7,6 +7,9 @@ from pathlib import Path
 from tqdm import tqdm
 import numpy as np
 import os
+import warnings
+
+from sovereign.flood import build_protection_scenario_from_baseline
 
 def update_calibration_parameters(sheet, parameter, new_value):
     '''
@@ -152,26 +155,19 @@ def run_DIGNAD(sim_start_year, nat_disaster_year, recovery_period, tradable_impa
 
     return gdp_impact, years
 
-def run_flood_sim_for_macro(basin_curves, adaptation_aep, num_sims, copula_random_ns, agr_GVA, man_GVA, ser_GVA, tradable_shares, thai_gdp):
+def _run_flood_sim_for_macro_pair(baseline_curves, scenario_curves, num_sims, copula_random_ns, agr_GVA, man_GVA, ser_GVA, tradable_shares, thai_gdp):
     '''
-    This function runs the flood simulation for macroeconomic modelling.
-    It takes as input:
-        - basin_curves: dict of BasinFloodDamageCurve objects, keyed by basin ID
-        - adaptation_aep: float, AEP level for adaptation measures
-        - num_sims: int, number of simulation years
-        - copula_random_ns: pd.DataFrame, random numbers for each basin and simulation year
-        - agr_GVA: float, Agriculture GVA baseline
-        - man_GVA: float, Manufacturing GVA baseline
-        - ser_GVA: float, Service GVA baseline
-        - tradables_shares: dict, tradable shares per sector
-        - thai_gdp: float, total GDP of Thailand
-    It outputs two dataframes with time series of DIGNAD input metrics (baseline and adapted).
+    Internal implementation for running paired baseline/scenario flood
+    simulations for macroeconomic modelling.
     '''
     
-    # Extract all sectors from the basin curves
-    all_sectors = {comp.sector for curve in basin_curves.values() for comp in curve.components}
-    # Extract all basin IDs
-    basin_ids = list(basin_curves.keys())
+    all_sectors = {
+        comp.sector
+        for curve_set in (baseline_curves, scenario_curves)
+        for curve in curve_set.values()
+        for comp in curve.components
+    }
+    basin_ids = sorted(set(baseline_curves.keys()) | set(scenario_curves.keys()))
     # Initialize outputs 
     # per-sector annual losses (monetary)
     sector_baseline_losses = {s: np.zeros(num_sims) for s in all_sectors}
@@ -208,23 +204,15 @@ def run_flood_sim_for_macro(basin_curves, adaptation_aep, num_sims, copula_rando
             basin_str = str(int(basin_id))
             if basin_str not in random_ns:
                 continue # skip
-            curve = basin_curves[basin_id]
             aep_event = 1-random_ns[str(int(basin_id))]
+            baseline_curve = baseline_curves.get(basin_id)
+            scenario_curve = scenario_curves.get(basin_id)
 
             for s in all_sectors:
                 # baseline
-                bl = curve.loss_at_event_aep(
-                    aep_event,
-                    scenario="baseline",
-                    sector=s,
-                )
+                bl = baseline_curve.loss_at_event_aep(aep_event, sector=s) if baseline_curve is not None else 0.0
                 # adaptation
-                ad = curve.loss_at_event_aep(
-                    aep_event,
-                    scenario="adaptation",
-                    adapted_protection_aep=adaptation_aep,
-                    sector=s,
-                )
+                ad = scenario_curve.loss_at_event_aep(aep_event, sector=s) if scenario_curve is not None else 0.0
                 sector_year_baseline[s] += bl
                 sector_year_adapted[s]  += ad
 
@@ -296,3 +284,95 @@ def run_flood_sim_for_macro(basin_curves, adaptation_aep, num_sims, copula_rando
     })
 
     return baseline_shocks, adapted_shocks
+
+
+def run_flood_sim_for_macro(*args):
+    '''
+    Run the flood simulation for macroeconomic modelling.
+
+    Preferred signature:
+        run_flood_sim_for_macro(
+            baseline_curves,
+            scenario_curves,
+            num_sims,
+            copula_random_ns,
+            agr_GVA,
+            man_GVA,
+            ser_GVA,
+            tradable_shares,
+            thai_gdp,
+        )
+
+    Legacy compatibility signature:
+        run_flood_sim_for_macro(
+            basin_curves,
+            adaptation_aep,
+            num_sims,
+            copula_random_ns,
+            agr_GVA,
+            man_GVA,
+            ser_GVA,
+            tradable_shares,
+            thai_gdp,
+        )
+    '''
+    if len(args) != 9:
+        raise TypeError(
+            "run_flood_sim_for_macro expects either "
+            "(baseline_curves, scenario_curves, num_sims, copula_random_ns, agr_GVA, "
+            "man_GVA, ser_GVA, tradable_shares, thai_gdp) or "
+            "(basin_curves, adaptation_aep, num_sims, copula_random_ns, agr_GVA, "
+            "man_GVA, ser_GVA, tradable_shares, thai_gdp)."
+        )
+
+    first, second, third, fourth, fifth, sixth, seventh, eighth, ninth = args
+
+    if isinstance(second, dict):
+        baseline_curves = first
+        scenario_curves = second
+        num_sims = third
+        copula_random_ns = fourth
+        agr_GVA = fifth
+        man_GVA = sixth
+        ser_GVA = seventh
+        tradable_shares = eighth
+        thai_gdp = ninth
+        return _run_flood_sim_for_macro_pair(
+            baseline_curves,
+            scenario_curves,
+            num_sims,
+            copula_random_ns,
+            agr_GVA,
+            man_GVA,
+            ser_GVA,
+            tradable_shares,
+            thai_gdp,
+        )
+
+    warnings.warn(
+        "The legacy run_flood_sim_for_macro(basin_curves, adaptation_aep, ...) "
+        "signature is deprecated. Prefer passing baseline_curves and scenario_curves directly.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    basin_curves = first
+    adaptation_aep = second
+    num_sims = third
+    copula_random_ns = fourth
+    agr_GVA = fifth
+    man_GVA = sixth
+    ser_GVA = seventh
+    tradable_shares = eighth
+    thai_gdp = ninth
+    scenario_curves = build_protection_scenario_from_baseline(basin_curves, adaptation_aep)
+    return _run_flood_sim_for_macro_pair(
+        basin_curves,
+        scenario_curves,
+        num_sims,
+        copula_random_ns,
+        agr_GVA,
+        man_GVA,
+        ser_GVA,
+        tradable_shares,
+        thai_gdp,
+    )
